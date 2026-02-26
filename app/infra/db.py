@@ -282,3 +282,47 @@ def get_last_payment_by_user(user_id: int):
         "status": row[2],
         "expires_at": row[3],
     }
+
+
+# =========================
+# INIT / MIGRATIONS
+# =========================
+
+def init_db():
+    with get_db() as conn:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS users (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER UNIQUE NOT NULL,
+                nome        TEXT,
+                criado_em   TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS payments_v2 (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id             INTEGER NOT NULL,
+                gateway             TEXT NOT NULL,
+                gateway_payment_id  TEXT,
+                idempotency_key     TEXT,
+                plan                TEXT NOT NULL,
+                amount              REAL NOT NULL,
+                status              TEXT NOT NULL DEFAULT 'pending',
+                expires_at          TEXT NOT NULL,
+                created_at          TEXT NOT NULL,
+                confirmed_at        TEXT,
+                reminders_sent      INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER NOT NULL,
+                payment_id  INTEGER,
+                plan        TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'active',
+                starts_at   TEXT NOT NULL,
+                ends_at     TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (payment_id) REFERENCES payments_v2(id)
+            );
+        """)
