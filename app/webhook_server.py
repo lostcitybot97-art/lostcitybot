@@ -18,6 +18,7 @@ application = build_application()
 
 @app.on_event("startup")
 async def startup():
+    db.init_db()
     await application.initialize()
     await application.bot.set_webhook(config.WEBHOOK_URL)
     logger.info("Telegram application inicializada (webhook mode)")
