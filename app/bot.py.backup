@@ -1,0 +1,307 @@
+import logging
+
+import base64
+from io import BytesIO
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+from telegram.request import HTTPXRequest
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+from app import db, payments, config
+from app.domain.plans import PLANS
+from app.jobs import (
+    process_expired_payments,
+    process_pending_payment_reminders,
+    process_confirmed_payments,
+)
+from app.handlers.payments import handle_check_payment_status
+
+# =========================
+# LOGGING
+# =========================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# =========================
+# HELPERS
+# =========================
+
+def is_admin(user_id: int) -> bool:
+    return str(user_id) in config.ADMIN_USER_IDS
+
+
+def plans_keyboard():
+    """Teclado com planos + botão de status"""
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=f"{plan.capitalize()} — R$ {data['price']}",
+                callback_data=f"buy:{plan}",
+            )
+        ]
+        for plan, data in PLANS.items()
+    ]
+
+    # Adicionar botão "Ver Minha Assinatura"
+    buttons.append([
+        InlineKeyboardButton(
+            text="📊 Ver Minha Assinatura",
+            callback_data="view_status"
+        )
+    ])
+
+    return InlineKeyboardMarkup(buttons)
+
+
+def pix_status_keyboard():
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    text="🔄 Verificar status do pagamento",
+                    callback_data="check_payment_status",
+                )
+            ]
+        ]
+    )
+
+# =========================
+# HANDLERS
+# =========================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    db.get_or_create_user(
+        telegram_id=user.id,
+        nome=user.full_name,
+    )
+
+    await update.message.reply_text(
+        "🤖 *Bem-vindo!*\\n\\nEscolha um plano abaixo:",
+        parse_mode="Markdown",
+        reply_markup=plans_keyboard(),
+    )
+
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = db.get_or_create_user(update.effective_user.id)
+
+    sub = db.get_active_subscription(user_id)
+
+    if not sub:
+        await update.message.reply_text("❌ Nenhuma assinatura ativa.")
+        return
+
+    await update.message.reply_text(
+        "✅ *Assinatura ativa*\\n"
+        f"Plano: {sub['plan']}\\n"
+        f"Válida até: {sub['ends_at']}",
+        parse_mode="Markdown",
+    )
+
+
+async def handle_view_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler para botão 'Ver Minha Assinatura'"""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = db.get_or_create_user(query.from_user.id)
+    sub = db.get_active_subscription(user_id)
+
+    if not sub:
+        await query.edit_message_text(
+            "❌ Nenhuma assinatura ativa.\\n\\n"
+            "Escolha um plano para começar:",
+            reply_markup=plans_keyboard()
+        )
+        return
+
+    await query.edit_message_text(
+        f"✅ *Assinatura ativa*\\n\\n"
+        f"Plano: {sub['plan']}\\n"
+        f"Válida até: {sub['ends_at']}\\n\\n"
+        "Voltar ao menu: /start",
+        parse_mode="Markdown",
+    )
+
+
+async def pix(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = db.get_or_create_user(update.effective_user.id)
+
+    if not context.args:
+        await update.message.reply_text(
+            "Use: `/pix semanal` ou `/pix mensal`",
+            parse_mode="Markdown",
+        )
+        return
+
+    plan = context.args[0].lower()
+    if plan not in PLANS:
+        await update.message.reply_text("❌ Plano inválido.")
+        return
+
+    payment = payments.create_pix_payment(
+        user_id=user_id,
+        plan=plan,
+        amount=PLANS[plan]["price"],
+    )
+
+    pix = payment["point_of_interaction"]["transaction_data"]
+
+    await update.message.reply_text(
+        "💳 *Pix gerado*\\n\\n"
+        "*Copia e cola:*\\n"
+        f"`{pix['qr_code']}`\\n\\n"
+        "Após pagar, o acesso será liberado automaticamente.",
+        parse_mode="Markdown",
+        reply_markup=pix_status_keyboard(),
+    )
+
+
+async def handle_plan_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    user_id = db.get_or_create_user(query.from_user.id)
+    _, plan = query.data.split(":")
+
+    if plan not in PLANS:
+        await query.edit_message_text("❌ Plano inválido.")
+        return
+
+    payment = payments.create_pix_payment(
+        user_id=user_id,
+        plan=plan,
+        amount=PLANS[plan]["price"],
+    )
+
+    pix = payment["point_of_interaction"]["transaction_data"]
+
+    # Enviar QR Code visual
+    qr_base64 = pix.get("qr_code_base64")
+
+    if qr_base64:
+        qr_bytes = base64.b64decode(qr_base64)
+        qr_image = BytesIO(qr_bytes)
+        qr_image.name = "pix.png"
+
+        await query.message.reply_photo(
+            photo=qr_image,
+            caption=(
+                "💳 *Pix gerado*\\n\\n"
+                "*Copia e cola:*\\n"
+                f"`{pix['qr_code']}`\\n\\n"
+                "Após pagar, o acesso será liberado automaticamente."
+            ),
+            parse_mode="Markdown",
+            reply_markup=pix_status_keyboard(),
+        )
+    else:
+        await query.message.reply_text(
+            "💳 *Pix gerado*\\n\\n"
+            "*Copia e cola:*\\n"
+            f"`{pix['qr_code']}`\\n\\n"
+            "Após pagar, o acesso será liberado automaticamente.",
+            parse_mode="Markdown",
+            reply_markup=pix_status_keyboard(),
+        )
+
+# =========================
+# ADMIN
+# =========================
+
+async def admin_listar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return
+
+    with db.get_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT u.telegram_id, s.plan, s.ends_at
+            FROM subscriptions s
+            JOIN users u ON u.id = s.user_id
+            WHERE s.status = 'active'
+            """
+        ).fetchall()
+
+    if not rows:
+        await update.message.reply_text("Nenhuma assinatura ativa.")
+        return
+
+    text = "📋 *Assinaturas ativas:*\\n\\n"
+    for r in rows:
+        text += f"{r['telegram_id']} — {r['plan']} — até {r['ends_at']}\\n"
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+    request = HTTPXRequest(
+        connect_timeout=30,
+        read_timeout=30,
+        write_timeout=30,
+        pool_timeout=30,
+    )
+
+    app = (
+        ApplicationBuilder()
+        .token(config.TELEGRAM_TOKEN)
+        .request(request)
+        .build()
+    )
+
+    # Commands
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status))
+    app.add_handler(CommandHandler("pix", pix))
+    app.add_handler(CommandHandler("admin_listar", admin_listar))
+
+    # Callbacks
+    app.add_handler(CallbackQueryHandler(handle_plan_selection, pattern="^buy:"))
+    app.add_handler(
+        CallbackQueryHandler(
+            handle_check_payment_status,
+            pattern="^check_payment_status$",
+        )
+    )
+    app.add_handler(CallbackQueryHandler(handle_view_status, pattern="^view_status$"))  # ← NOVO
+
+    logger.info("Bot iniciado")
+
+    # =========================
+    # SCHEDULER
+    # =========================
+
+    scheduler = AsyncIOScheduler()
+    scheduler.start()
+
+    scheduler.add_job(process_expired_payments, "interval", minutes=1)
+    scheduler.add_job(process_pending_payment_reminders, "interval", minutes=2)
+    scheduler.add_job(process_confirmed_payments, "interval", minutes=1)
+
+    logger.info("Jobs de pagamentos registrados")
+
+    app.run_polling(drop_pending_updates=True, poll_interval=2.0)
+
+
+if __name__ == "__main__":
+    main()
+

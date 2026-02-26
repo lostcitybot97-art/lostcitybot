@@ -1,0 +1,710 @@
+"""
+Bot Telegram com pagamento Pix via Mercado Pago
+Arquitetura: subscriptions + payments + users
+Segurança: BEGIN IMMEDIATE, índice único, antifraude 5min
+"""
+
+import logging
+import os
+import time
+import base64
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
+from typing import Dict, Optional
+
+import pytz
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    JobQueue,
+)
+
+from config import TELEGRAM_TOKEN
+from payments import create_pix_payment, get_payment_status, MercadoPagoError
+from db import (
+    get_or_create_user,
+    registrar_pagamento,
+    registrar_pagamento_confirmado,
+    ativar_assinatura,
+    usuario_ativo_por_subscription,
+    get_conn,
+)
+
+# ============================================================================
+# Configuração de logs
+# ============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Variáveis de ambiente
+# ============================================================================
+
+GRUPO_ID = os.getenv("GRUPO_ID", "")  # Deixe vazio até configurar
+ADMIN_USER_IDS = os.getenv("ADMIN_USER_IDS", "")
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_USER_IDS.split(",") if x.strip().isdigit()]
+
+# ============================================================================
+# Configuração de planos
+# ============================================================================
+
+PLANOS: Dict[str, Dict] = {
+    # "diario":    {"label": "📅 Diário - R$ 0,50",     "valor": 0.50,  "dias": 1},
+    "semanal":   {"label": "📅 Semanal - R$ 1,00",   "valor": 1.00, "dias": 7},
+    "mensal":    {"label": "📅 Mensal - R$ 1,00",    "valor": 1.00, "dias": 30},
+    "vitalicia": {"label": "♾️ Vitalícia - R$ 1,00", "valor": 1.00, "dias": 3650},  # ~10 anos
+}
+
+# ============================================================================
+# Fuso horário
+# ============================================================================
+
+TZ_LOCAL = pytz.timezone("America/Sao_Paulo")
+TZ_UTC = pytz.timezone("UTC")
+
+
+def agora_utc() -> datetime:
+    """Retorna datetime timezone-aware em UTC."""
+    return datetime.now(timezone.utc)
+
+
+def format_local(dt_iso: str) -> str:
+    """Converte string ISO UTC para formato local (DD/MM/YYYY HH:MM)."""
+    if not dt_iso:
+        return ""
+    try:
+        dt_utc = datetime.fromisoformat(dt_iso.replace("Z", "+00:00"))
+        if dt_utc.tzinfo is None:
+            dt_utc = TZ_UTC.localize(dt_utc)
+        dt_local = dt_utc.astimezone(TZ_LOCAL)
+        return dt_local.strftime("%d/%m/%Y %H:%M")
+    except Exception as e:
+        logger.error(f"Erro ao formatar data: {e}")
+        return dt_iso
+
+
+def is_admin(user_id: int) -> bool:
+    """Verifica se o usuário é admin."""
+    return user_id in ADMIN_IDS
+
+
+# ============================================================================
+# Handler: /start
+# ============================================================================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Comando /start - entrada principal do bot."""
+    user = update.effective_user
+    telegram_id = user.id
+    
+    logger.info(f"/start - user_id={telegram_id}, nome={user.full_name}")
+
+    # Cria ou pega user_id do banco
+    try:
+        user_id = get_or_create_user(telegram_id, user.full_name)
+    except Exception as e:
+        logger.error(f"Erro ao criar usuário: {e}")
+        await update.message.reply_text(
+            "❌ Erro interno ao processar seu cadastro.\n"
+            "Tente novamente em alguns instantes."
+        )
+        return
+
+    # Verifica se já tem assinatura ativa
+    try:
+        if usuario_ativo_por_subscription(user_id):
+            await update.message.reply_text(
+                "✅ Você já tem acesso ativo ao grupo exclusivo!\n\n"
+                "Use /status para ver os detalhes da sua assinatura.\n\n"
+                "Se algo estiver errado, fale com o suporte."
+            )
+            return
+    except Exception as e:
+        logger.error(f"Erro ao verificar assinatura: {e}")
+
+    # Mostra menu de planos
+    keyboard = []
+    for plano_key, plano in PLANOS.items():
+        keyboard.append([InlineKeyboardButton(plano["label"], callback_data=f"plano_{plano_key}")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    text = (
+        "🎉 *Bem-vindo ao grupo exclusivo!*\n\n"
+        "Escolha um plano para continuar:\n\n"
+    )
+    
+    for plano_key, plano in PLANOS.items():
+        text += f"• *{plano['label']}*: acesso por {plano['dias']} dias\n"
+
+    await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+
+
+# ============================================================================
+# Handler: escolher plano
+# ============================================================================
+
+async def escolher_plano(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback quando usuário escolhe um plano."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data  # ex: "plano_mensal"
+    _, plano_key = data.split("_", 1)
+    
+    if plano_key not in PLANOS:
+        await query.message.reply_text("❌ Plano inválido.")
+        return
+
+    plano = PLANOS[plano_key]
+    user = query.from_user
+    telegram_id = user.id
+
+    logger.info(f"Plano escolhido: {plano_key} por user_id={telegram_id}")
+
+    # Garante user_id
+    try:
+        user_id = get_or_create_user(telegram_id, user.full_name)
+    except Exception as e:
+        logger.error(f"Erro ao obter user_id: {e}")
+        await query.message.reply_text("❌ Erro interno. Tente novamente.")
+        return
+
+    # ========================================================================
+    # ANTIFRAUDE: verifica se já tem PIX pendente nos últimos 5 minutos
+    # ========================================================================
+    try:
+        conn = get_conn()
+        cur = conn.execute("""
+            SELECT gateway_payment_id, criado_em
+            FROM payments
+            WHERE user_id = ?
+              AND status = 'pendente'
+              AND datetime(criado_em) > datetime('now', '-5 minutes')
+            ORDER BY criado_em DESC
+            LIMIT 1
+        """, (user_id,))
+        row = cur.fetchone()
+        conn.close()
+
+        if row:
+            pix_pendente_id = row["gateway_payment_id"]
+            criado_em = row["criado_em"]
+            
+            logger.info(f"Usuário {telegram_id} já tem PIX pendente: {pix_pendente_id}")
+            
+            await query.edit_message_text(
+                "⚠️ *Você já tem um pagamento pendente!*\n\n"
+                f"Criado em: {format_local(criado_em)}\n\n"
+                "Por favor, conclua o pagamento anterior antes de gerar um novo.\n\n"
+                "Se já pagou, aguarde até 1 minuto para a confirmação automática.",
+                parse_mode="Markdown"
+            )
+            return
+
+    except Exception as e:
+        logger.error(f"Erro ao verificar pagamento pendente: {e}")
+
+    # ========================================================================
+    # Gerar cobrança Pix no Mercado Pago
+    # ========================================================================
+
+    await query.edit_message_text(
+        f"🔄 Gerando cobrança Pix para o plano: *{plano['label']}*...\n\n"
+        "Aguarde alguns instantes.",
+        parse_mode="Markdown"
+    )
+
+    try:
+        mp_data = create_pix_payment(
+            telegram_id=telegram_id,
+            plano=plano_key,
+            valor=plano["valor"],
+        )
+    except MercadoPagoError as e:
+        logger.error(f"Erro ao criar Pix no MP: {e}")
+        await query.message.reply_text(
+            "❌ *Ops! Nosso sistema de pagamento está temporariamente indisponível.*\n\n"
+            "Por favor, tente novamente em 5 minutos.\n\n"
+            "Se o problema persistir, entre em contato com o suporte.",
+            parse_mode="Markdown"
+        )
+        return
+    except Exception as e:
+        logger.error(f"Erro inesperado ao criar Pix: {e}")
+        await query.message.reply_text(
+            "❌ Erro inesperado. Tente novamente mais tarde."
+        )
+        return
+
+    payment_id = mp_data["payment_id"]
+    qr_code = mp_data["qr_code"]
+    qr_code_base64 = mp_data["qr_code_base64"]
+
+    # Converte QR Code base64 em imagem
+    try:
+        qr_bytes = base64.b64decode(qr_code_base64)
+        qr_image = BytesIO(qr_bytes)
+        qr_image.name = f"pix_{payment_id}.png"
+    except Exception as e:
+        logger.error(f"Erro ao decodificar QR Code: {e}")
+        await query.message.reply_text("❌ Erro ao gerar QR Code.")
+        return
+
+    # Registra pagamento no banco
+    agora = agora_utc().isoformat()
+    try:
+        registrar_pagamento(
+            telegram_id=telegram_id,
+            user_id=user_id,
+            plano=plano_key,
+            valor=plano["valor"],
+            gateway_payment_id=payment_id,
+        )
+        logger.info(f"Pagamento registrado: payment_id={payment_id}, user_id={user_id}")
+    except Exception as e:
+        logger.error(f"Erro ao registrar pagamento: {e}")
+
+    # Salva no context para o job
+    context.user_data["current_payment"] = {
+        "payment_id": payment_id,
+        "plano_key": plano_key,
+        "valor": plano["valor"],
+        "dias": plano["dias"],
+    }
+
+    # Envia imagem do QR Code
+    await query.message.reply_photo(
+        photo=qr_image,
+        caption=(
+            "💳 *Pagamento via Pix*\n\n"
+            f"Plano: *{plano['label']}*\n"
+            f"Valor: *R$ {plano['valor']:.2f}*\n\n"
+            "Escaneie o QR Code acima no app do seu banco para pagar."
+        ),
+        parse_mode="Markdown",
+    )
+
+    # Envia código copia-e-cola
+    await query.message.reply_text(
+        "🔢 *Código Pix copia-e-cola:*\n\n"
+        f"`{qr_code}`\n\n"
+        "Após o pagamento, vou verificar automaticamente o status em alguns instantes.",
+        parse_mode="Markdown",
+    )
+
+    # Agenda job de verificação
+    job_queue: JobQueue = context.job_queue
+    job_queue.run_repeating(
+        verificar_pagamento_job,
+        interval=30,
+        first=30,
+        name=f"check_payment_{payment_id}",
+        data={
+            "telegram_id": telegram_id,
+            "user_id": user_id,
+            "payment_id": payment_id,
+            "plano_key": plano_key,
+            "tentativas": 0,
+            "max_tentativas": 30,  # 30 * 30s = 15 minutos
+        },
+    )
+
+
+# ============================================================================
+# Job: verificar pagamento (polling)
+# ============================================================================
+
+async def verificar_pagamento_job(context: ContextTypes.DEFAULT_TYPE):
+    """Job que roda a cada 30s para verificar status do pagamento."""
+    job = context.job
+    data = job.data
+
+    telegram_id = data["telegram_id"]
+    user_id = data["user_id"]
+    payment_id = data["payment_id"]
+    plano_key = data["plano_key"]
+    tentativas = data.get("tentativas", 0)
+    max_tentativas = data.get("max_tentativas", 30)
+
+    # Se passou do prazo, expira
+    if tentativas >= max_tentativas:
+        logger.warning(f"Pagamento expirou: {payment_id} (user_id={telegram_id})")
+        
+        await context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "⏰ O prazo para pagar este Pix *expirou*.\n\n"
+                "Se você ainda quiser acessar o grupo, use /start para gerar um *novo* código Pix."
+            ),
+            parse_mode="Markdown",
+        )
+        
+        job.schedule_removal()
+        return
+
+    data["tentativas"] = tentativas + 1
+
+    # Consulta status no Mercado Pago
+    try:
+        status = get_payment_status(payment_id)
+    except Exception as e:
+        logger.error(f"Erro ao consultar status do pagamento {payment_id}: {e}")
+        return
+
+    if not status:
+        return  # Ainda pendente
+
+    # ========================================================================
+    # PAGAMENTO APROVADO
+    # ========================================================================
+    if status == "approved":
+        plano = PLANOS[plano_key]
+        
+        logger.info(f"Pagamento aprovado: {payment_id}, user_id={telegram_id}, plano={plano_key}")
+
+        try:
+            # Marca pagamento como confirmado
+            internal_payment_id = registrar_pagamento_confirmado(user_id, payment_id)
+            
+            # Ativa assinatura (transação BEGIN IMMEDIATE)
+            ativar_assinatura(
+                user_id=user_id,
+                plan=plano_key,
+                payment_id=internal_payment_id,
+                dias=plano["dias"],
+            )
+            
+            logger.info(f"Assinatura ativada: user_id={user_id}, plano={plano_key}")
+
+        except Exception as e:
+            logger.error(f"ERRO CRÍTICO ao ativar assinatura: {e}")
+            
+            # Notifica usuário
+            await context.bot.send_message(
+                chat_id=telegram_id,
+                text=(
+                    "⚠️ *Seu pagamento foi aprovado*, mas houve um erro técnico ao ativar seu acesso.\n\n"
+                    "Nossa equipe já foi notificada e vai resolver isso rapidamente.\n\n"
+                    "Por favor, entre em contato com o suporte."
+                ),
+                parse_mode="Markdown"
+            )
+            
+            # Notifica admins
+            for admin_id in ADMIN_IDS:
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=(
+                            f"🚨 *ERRO AO ATIVAR ASSINATURA*\n\n"
+                            f"User ID: `{telegram_id}`\n"
+                            f"Payment ID: `{payment_id}`\n"
+                            f"Plano: {plano_key}\n"
+                            f"Erro: {e}"
+                        ),
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+            
+            job.schedule_removal()
+            return
+
+        job.schedule_removal()
+
+        # Notifica usuário
+        await context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "✅ *PAGAMENTO APROVADO!*\n\n"
+                f"Plano: *{plano['label']}*\n"
+                f"Valor: *R$ {plano['valor']:.2f}*\n"
+                f"Duração: *{plano['dias']} dias*\n\n"
+                "_Aguarde, você receberá o link do grupo em instantes..._"
+            ),
+            parse_mode="Markdown",
+        )
+
+        # ====================================================================
+        # CONVITE AUTOMÁTICO PARA O GRUPO
+        # ====================================================================
+        if GRUPO_ID:
+            try:
+                invite_link = await context.bot.create_chat_invite_link(
+                    chat_id=int(GRUPO_ID),
+                    member_limit=1,  # link funciona só para essa pessoa
+                    expire_date=int(time.time()) + 3600,  # expira em 1h
+                    name=f"Convite para {user.first_name if 'user' in locals() else telegram_id}"
+                )
+                
+                await context.bot.send_message(
+                    chat_id=telegram_id,
+                    text=(
+                        "🎉 *Bem-vindo ao grupo exclusivo!*\n\n"
+                        f"Clique no link abaixo para entrar:\n"
+                        f"{invite_link.invite_link}\n\n"
+                        "⚠️ Este link é exclusivo seu e expira em 1 hora."
+                    ),
+                    parse_mode="Markdown"
+                )
+                
+                logger.info(f"Link de convite enviado para {telegram_id}")
+
+            except Exception as e:
+                logger.error(f"Erro ao criar link de convite: {e}")
+                await context.bot.send_message(
+                    chat_id=telegram_id,
+                    text=(
+                        "⚠️ Não consegui gerar o link automaticamente.\n"
+                        "Entre em contato com o suporte para receber o acesso."
+                    )
+                )
+        else:
+            logger.warning("GRUPO_ID não configurado - não foi possível enviar convite")
+
+    # ========================================================================
+    # PAGAMENTO REJEITADO/CANCELADO
+    # ========================================================================
+    elif status in {"rejected", "cancelled", "refunded"}:
+        logger.info(f"Pagamento {status}: {payment_id} (user_id={telegram_id})")
+        
+        job.schedule_removal()
+        
+        await context.bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                "❌ Seu pagamento foi *recusado ou cancelado* pelo Mercado Pago.\n\n"
+                "Se você não reconhece isso, tente gerar um novo Pix pelo /start."
+            ),
+            parse_mode="Markdown",
+        )
+
+
+# ============================================================================
+# Handler: /status
+# ============================================================================
+
+async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mostra status da assinatura do usuário."""
+    user = update.effective_user
+    telegram_id = user.id
+    
+    try:
+        user_id = get_or_create_user(telegram_id, user.full_name)
+    except Exception as e:
+        logger.error(f"Erro ao obter user_id: {e}")
+        await update.message.reply_text("❌ Erro ao consultar status.")
+        return
+
+    # Busca assinatura ativa
+    try:
+        conn = get_conn()
+        cur = conn.execute("""
+            SELECT plan, starts_at, ends_at, status
+            FROM subscriptions
+            WHERE user_id = ?
+              AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """, (user_id,))
+        row = cur.fetchone()
+        conn.close()
+
+        if not row:
+            await update.message.reply_text(
+                "🚫 Você *não tem acesso ativo*.\n\n"
+                "Use /start para escolher um plano e realizar o pagamento.",
+                parse_mode="Markdown"
+            )
+            return
+
+        plano_key = row["plan"]
+        starts_at = row["starts_at"]
+        ends_at = row["ends_at"]
+        
+        # Calcula tempo restante
+        try:
+            dt_ends = datetime.fromisoformat(ends_at.replace("Z", "+00:00"))
+            dt_now = agora_utc()
+            delta = dt_ends - dt_now
+            dias_restantes = delta.days
+            horas_restantes = delta.seconds // 3600
+        except:
+            dias_restantes = 0
+            horas_restantes = 0
+
+        plano_label = PLANOS.get(plano_key, {}).get("label", plano_key)
+
+        await update.message.reply_text(
+            "✅ *Seu acesso está ATIVO!*\n\n"
+            f"📦 Plano: *{plano_label}*\n"
+            f"📅 Início: {format_local(starts_at)}\n"
+            f"⏰ Expira em: {format_local(ends_at)}\n"
+            f"⏳ Tempo restante: *{dias_restantes} dias e {horas_restantes}h*",
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        logger.error(f"Erro ao consultar status: {e}")
+        await update.message.reply_text("❌ Erro ao consultar status.")
+
+
+# ============================================================================
+# Handler: /admin_listar (apenas admins)
+# ============================================================================
+
+async def admin_listar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lista todos usuários com assinatura ativa."""
+    user = update.effective_user
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("🚫 Você não tem permissão para usar este comando.")
+        return
+
+    try:
+        conn = get_conn()
+        cur = conn.execute("""
+            SELECT u.telegram_id, u.nome, s.plan, s.ends_at, s.status
+            FROM users u
+            INNER JOIN subscriptions s ON s.user_id = u.id
+            WHERE s.status = 'active'
+            ORDER BY s.ends_at ASC
+        """)
+        rows = cur.fetchall()
+        conn.close()
+
+        if not rows:
+            await update.message.reply_text("Nenhum usuário ativo no momento.")
+            return
+
+        text = f"📊 *Usuários ativos:* {len(rows)}\n\n"
+        
+        for row in rows[:20]:  # Limita a 20 para não estourar mensagem
+            telegram_id = row["telegram_id"]
+            nome = row["nome"] or "Sem nome"
+            plano = row["plan"]
+            ends_at = format_local(row["ends_at"])
+            
+            text += f"• `{telegram_id}` - {nome}\n  Plano: {plano} | Expira: {ends_at}\n\n"
+
+        if len(rows) > 20:
+            text += f"_(e mais {len(rows) - 20} usuários)_"
+
+        await update.message.reply_text(text, parse_mode="Markdown")
+
+    except Exception as e:
+        logger.error(f"Erro ao listar usuários: {e}")
+        await update.message.reply_text("❌ Erro ao consultar usuários.")
+
+
+# ============================================================================
+# Handler: /admin_cancelar (apenas admins)
+# ============================================================================
+
+async def admin_cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancela manualmente a assinatura de um usuário."""
+    user = update.effective_user
+    
+    if not is_admin(user.id):
+        await update.message.reply_text("🚫 Você não tem permissão para usar este comando.")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "Uso: `/admin_cancelar <telegram_id>`\n\n"
+            "Exemplo: `/admin_cancelar 123456789`",
+            parse_mode="Markdown"
+        )
+        return
+
+    try:
+        target_telegram_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ ID inválido. Use apenas números.")
+        return
+
+    try:
+        # Busca user_id
+        conn = get_conn()
+        cur = conn.execute("SELECT id FROM users WHERE telegram_id = ?", (target_telegram_id,))
+        row = cur.fetchone()
+        
+        if not row:
+            conn.close()
+            await update.message.reply_text(f"❌ Usuário `{target_telegram_id}` não encontrado.", parse_mode="Markdown")
+            return
+
+        target_user_id = row["id"]
+
+        # Expira assinaturas ativas
+        conn.execute("""
+            UPDATE subscriptions
+            SET status = 'expired'
+            WHERE user_id = ?
+              AND status = 'active'
+        """, (target_user_id,))
+        
+        conn.commit()
+        conn.close()
+
+        logger.info(f"Admin {user.id} cancelou assinatura de {target_telegram_id}")
+
+        await update.message.reply_text(
+            f"✅ Assinatura do usuário `{target_telegram_id}` foi cancelada.",
+            parse_mode="Markdown"
+        )
+
+        # Notifica o usuário
+        try:
+            await context.bot.send_message(
+                chat_id=target_telegram_id,
+                text=(
+                    "⚠️ Sua assinatura foi cancelada por um administrador.\n\n"
+                    "Se você acredita que isso é um erro, entre em contato com o suporte."
+                )
+            )
+        except:
+            pass
+
+    except Exception as e:
+        logger.error(f"Erro ao cancelar assinatura: {e}")
+        await update.message.reply_text("❌ Erro ao cancelar assinatura.")
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+def main():
+    """Inicia o bot."""
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("TELEGRAM_TOKEN não definido no .env")
+
+    logger.info("Iniciando bot...")
+    logger.info(f"Admins configurados: {ADMIN_IDS}")
+    logger.info(f"Grupo ID configurado: {GRUPO_ID if GRUPO_ID else 'NÃO CONFIGURADO'}")
+
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    # Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("admin_listar", admin_listar))
+    app.add_handler(CommandHandler("admin_cancelar", admin_cancelar))
+    app.add_handler(CallbackQueryHandler(escolher_plano, pattern="^plano_"))
+
+    logger.info("Bot iniciado com sucesso!")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
+
