@@ -44,6 +44,8 @@ def create_pix_payment(user_id: int, plan: str):
 
     # 2️⃣ Verificar se já existe PIX pendente
     pending = get_pending_payment(user_id)
+    if pending:
+        pending = dict(pending)
 
     if pending:
         # Mesmo plano → reutiliza
