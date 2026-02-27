@@ -52,38 +52,44 @@ async def telegram_webhook(request: Request):
 
 @app.post("/webhook/mercadopago")
 async def mercadopago_webhook(request: Request):
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
 
-    logger.info("Webhook Mercado Pago recebido")
+    # Tenta pegar data.id do body ou da query string
+    data_id = (payload.get("data") or {}).get("id")
+    if not data_id:
+        data_id = request.query_params.get("data.id")
 
-    data_id = payload.get("data", {}).get("id")
-    event_type = payload.get("type")
+    event_type = payload.get("type") or request.query_params.get("type")
+
+    logger.info(f"Webhook Mercado Pago recebido: data_id={data_id} type={event_type}")
 
     if not data_id or event_type != "payment":
         return {"status": "ignored"}
 
-    payment = db.get_payment_by_gateway_id(data_id)
+    payment = db.get_payment_by_gateway_id(str(data_id))
     if not payment:
-        logger.warning("Pagamento não encontrado no banco")
+        logger.warning(f"Pagamento {data_id} nao encontrado no banco")
         return {"status": "not_found"}
 
-    external_reference = payment["external_reference"]
-    status = check_payment_status(external_reference)
+    from app.payments import check_payment_status
+    status = check_payment_status(str(data_id))
 
     if not status:
-        raise HTTPException(status_code=400, detail="Erro ao consultar status")
+        return {"status": "error_checking"}
 
-    db.update_payment_status(
-        payment_id=payment["id"],
-        status=status,
-    )
+    db.update_payment_status(payment_id=payment["id"], status=status)
+    logger.info(f"Pagamento {payment['id']} atualizado para {status}")
 
-    logger.info(
-        "Pagamento atualizado",
-        extra={
-            "payment_id": payment["id"],
-            "status": status,
-        },
-    )
+    if status == "approved":
+        try:
+            await application.bot.send_message(
+                chat_id=payment["user_id"],
+                text="✅ Pagamento confirmado! Em breve seu acesso será liberado."
+            )
+        except Exception as e:
+            logger.warning(f"Nao foi possivel notificar usuario: {e}")
 
     return {"status": "ok"}
