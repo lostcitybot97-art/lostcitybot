@@ -303,6 +303,7 @@ def init_db():
                 user_id             INTEGER NOT NULL,
                 gateway             TEXT NOT NULL,
                 gateway_payment_id  TEXT,
+                external_reference  TEXT,
                 idempotency_key     TEXT,
                 plan                TEXT NOT NULL,
                 amount              REAL NOT NULL,
@@ -311,6 +312,8 @@ def init_db():
                 created_at          TEXT NOT NULL,
                 confirmed_at        TEXT,
                 reminders_sent      INTEGER NOT NULL DEFAULT 0,
+                pix_qr_code         TEXT,
+                pix_qr_code_base64  TEXT,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             );
 

@@ -30,6 +30,11 @@ async def shutdown():
     logger.info("Telegram application finalizada")
 
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
     payload = await request.json()
