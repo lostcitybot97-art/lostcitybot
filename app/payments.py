@@ -121,8 +121,9 @@ def create_pix_payment(user_id: int, plan: str):
 
     if result["status"] not in (200, 201):
         logger.error(
-            "Erro ao criar pagamento no Mercado Pago",
-            extra={"response": result},
+            "Erro ao criar pagamento no Mercado Pago: status=%s body=%s",
+            result["status"],
+            result.get("response", result),
         )
         raise RuntimeError("Erro ao gerar Pix no Mercado Pago")
 
