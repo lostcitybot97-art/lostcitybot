@@ -73,11 +73,11 @@ async def handle_check_payment_status(update: Update, context: ContextTypes.DEFA
     if status == "approved":
         await query.edit_message_text("✅ *Pagamento confirmado!*\n\nSeu acesso será liberado.", parse_mode="Markdown")
     elif status in ("pending", "in_process"):
-        await query.edit_message_text("⏳ *Pagamento ainda pendente.*\n\nTente novamente em instantes.", parse_mode="Markdown")
+        await query.message.reply_text("⏳ *Pagamento ainda pendente.*\n\nTente novamente em instantes.", parse_mode="Markdown")
     elif status in ("cancelled", "rejected", "expired"):
-        await query.edit_message_text("❌ *PIX expirou ou foi cancelado.*\n\nGere um novo: /start", parse_mode="Markdown")
+        await query.message.reply_text("❌ *PIX expirou ou foi cancelado.*\n\nGere um novo: /start", parse_mode="Markdown")
     else:
-        await query.edit_message_text(f"❓ Status: {status}", parse_mode="Markdown")
+        await query.message.reply_text(f"❓ Status: {status}", parse_mode="Markdown")
 
 
 def register_handlers(application):
