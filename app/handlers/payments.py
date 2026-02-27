@@ -68,7 +68,7 @@ async def handle_check_payment_status(update: Update, context: ContextTypes.DEFA
         await query.edit_message_text("❌ Nenhum pagamento pendente encontrado.\n\nGere um novo: /start")
         return
 
-    status = check_payment_status(pending["external_reference"])
+    status = check_payment_status(pending["gateway_payment_id"])
 
     if status == "approved":
         await query.edit_message_text("✅ *Pagamento confirmado!*\n\nSeu acesso será liberado.", parse_mode="Markdown")
