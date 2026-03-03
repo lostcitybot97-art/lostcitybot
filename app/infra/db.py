@@ -164,6 +164,12 @@ def get_confirmed_unprocessed_payments():
         """)
         return cur.fetchall()
 
+def get_user_by_id(user_id: int):
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
+        return cur.fetchone()
+
 
 def init_db():
     with get_db() as conn:
