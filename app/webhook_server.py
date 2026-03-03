@@ -27,10 +27,17 @@ async def startup():
 
     await application.initialize()
     await application.start()
-    await application.bot.set_webhook(config.WEBHOOK_URL)
 
+    # 👇 REGISTRA WEBHOOK FORÇANDO RESET
+    await application.bot.delete_webhook(drop_pending_updates=True)
+
+    await application.bot.set_webhook(
+        url=config.WEBHOOK_URL,
+        allowed_updates=Update.ALL_TYPES,
+    )
+
+    logger.info(f"Webhook configurado para {config.WEBHOOK_URL}")
     logger.info("Telegram application inicializada (webhook mode)")
-
 
 @app.on_event("shutdown")
 async def shutdown():
