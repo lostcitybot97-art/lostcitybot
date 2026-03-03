@@ -26,7 +26,7 @@ async def startup():
         raise RuntimeError("WEBHOOK_URL não definida no ambiente")
 
     await application.initialize()
-    await application.start()  # ✅ CORREÇÃO IMPORTANTE
+    await application.start()
     await application.bot.set_webhook(config.WEBHOOK_URL)
 
     logger.info("Telegram application inicializada (webhook mode)")
@@ -34,7 +34,7 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    await application.stop()      # ✅ CORREÇÃO IMPORTANTE
+    await application.stop()
     await application.shutdown()
     logger.info("Telegram application finalizada")
 
@@ -82,18 +82,20 @@ async def mercadopago_webhook(request: Request):
         logger.warning(f"Pagamento {data_id} nao encontrado no banco")
         return {"status": "not_found"}
 
-previous_status = payment["status"]
+    previous_status = payment["status"]
 
-status = check_payment_status(str(data_id))
-if not status:
-    return {"status": "error_checking"}
+    status = check_payment_status(str(data_id))
+    if not status:
+        return {"status": "error_checking"}
 
-db.update_payment_status(payment_id=payment["id"], status=status)
-logger.info(f"Pagamento {payment['id']} atualizado de {previous_status} para {status}")
+    db.update_payment_status(payment_id=payment["id"], status=status)
 
-# 🔐 Idempotência real
-if previous_status != "approved" and status == "approved":
+    logger.info(
+        f"Pagamento {payment['id']} atualizado de {previous_status} para {status}"
+    )
 
+    # 🔐 Idempotência real (só executa uma vez na transição)
+    if previous_status != "approved" and status == "approved":
 
         user = get_user_by_id(payment["user_id"])
         if not user:
@@ -123,6 +125,10 @@ if previous_status != "approved" and status == "approved":
             await application.bot.send_message(
                 chat_id=telegram_id,
                 text=text,
+            )
+
+            logger.info(
+                f"Invite enviado com sucesso para usuario {telegram_id}"
             )
 
         except Exception as e:
