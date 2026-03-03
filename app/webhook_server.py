@@ -82,15 +82,18 @@ async def mercadopago_webhook(request: Request):
         logger.warning(f"Pagamento {data_id} nao encontrado no banco")
         return {"status": "not_found"}
 
-    status = check_payment_status(str(data_id))
+previous_status = payment["status"]
 
-    if not status:
-        return {"status": "error_checking"}
+status = check_payment_status(str(data_id))
+if not status:
+    return {"status": "error_checking"}
 
-    db.update_payment_status(payment_id=payment["id"], status=status)
-    logger.info(f"Pagamento {payment['id']} atualizado para {status}")
+db.update_payment_status(payment_id=payment["id"], status=status)
+logger.info(f"Pagamento {payment['id']} atualizado de {previous_status} para {status}")
 
-    if status == "approved":
+# 🔐 Idempotência real
+if previous_status != "approved" and status == "approved":
+
 
         user = get_user_by_id(payment["user_id"])
         if not user:
