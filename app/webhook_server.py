@@ -92,40 +92,6 @@ async def mercadopago_webhook(request: Request):
 
     if status == "approved":
 
-        # Buscar o usuário completo para obter o telegram_id
-        user = get_user_by_id(payment["user_id"])
-        if not user:
-            logger.warning(f"Usuario {payment['user_id']} nao encontrado para pagamento {payment['id']}")
-            return {"status": "user_not_found"}
-
-        telegram_id = user["telegram_id"]
-
-        try:
-            # Cria link de convite para o grupo, válido por 1 hora e 1 uso
-            expire_date = int(time.time()) + 3600  # 1 hora
-            invite_link = await application.bot.create_chat_invite_link(
-                chat_id=config.GRUPO_ID,
-                member_limit=1,
-                expire_date=expire_date,
-            )
-
-            text = (
-                "✅ Pagamento aprovado!\n\n"
-                "Aqui está seu link de acesso ao grupo:\n"
-                f"{invite_link.invite_link}\n\n"
-                "Ele é válido por 1 hora e para apenas uma entrada."
-            )
-
-            await application.bot.send_message(
-                chat_id=telegram_id,
-                text=text,
-            )
-        except Exception as e:
-            logger.warning(f"Erro ao criar/enviar invite para usuario {telegram_id}: {e}")
-
-    return {"status": "ok"}
-
-
         user = get_user_by_id(payment["user_id"])
         if not user:
             logger.warning(
@@ -162,4 +128,3 @@ async def mercadopago_webhook(request: Request):
             )
 
     return {"status": "ok"}
-
