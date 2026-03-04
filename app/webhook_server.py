@@ -1,4 +1,5 @@
 import logging
+import time
 
 from fastapi import FastAPI, Request, HTTPException
 from telegram import Update
@@ -7,7 +8,7 @@ from app.bot import build_application
 from app.infra import db
 from app import config
 from app.payments import check_payment_status
-from app.infra.db import confirm_payment
+from app.infra.db import confirm_payment, get_user_by_id
 from app.domain.subscriptions import activate_subscription_from_payment
 
 
@@ -66,7 +67,7 @@ async def shutdown():
 # HEALTHCHECK
 # =========================
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health():
     return {"status": "ok"}
 
@@ -126,7 +127,7 @@ async def mercadopago_webhook(request: Request):
         # 2️⃣ Marca pagamento como confirmado no banco
         payment = confirm_payment(gateway_payment_id)
 
-        # 3️⃣ Ativa / empilha assinatura
+        # 3️⃣ Ativa / empilha assinatura (idempotente)
         activate_subscription_from_payment(payment["id"])
 
         logger.info(
@@ -134,8 +135,52 @@ async def mercadopago_webhook(request: Request):
             extra={"gateway_payment_id": gateway_payment_id},
         )
 
+        # 4️⃣ Envia link de convite para o usuário
+        user = get_user_by_id(payment["user_id"])
+        if not user:
+            logger.warning(
+                "Usuario nao encontrado para pagamento",
+                extra={"user_id": payment["user_id"], "payment_id": payment["id"]},
+            )
+            return {"ok": True}
+
+        telegram_id = user["telegram_id"]
+
+        try:
+            expire_date = int(time.time()) + 3600
+
+            invite_link = await application.bot.create_chat_invite_link(
+                chat_id=config.GRUPO_ID,
+                member_limit=1,
+                expire_date=expire_date,
+            )
+
+            text = (
+                "✅ Pagamento aprovado!\n\n"
+                "Aqui está seu link de acesso ao grupo:\n"
+                f"{invite_link.invite_link}\n\n"
+                "Ele é válido por 1 hora e para apenas uma entrada."
+            )
+
+            await application.bot.send_message(
+                chat_id=telegram_id,
+                text=text,
+            )
+
+            logger.info(
+                "Invite enviado com sucesso para usuario",
+                extra={"telegram_id": telegram_id, "payment_id": payment["id"]},
+            )
+
+        except Exception as e:
+            logger.warning(
+                "Erro ao criar/enviar invite para usuario",
+                extra={"telegram_id": telegram_id, "error": str(e)},
+            )
+
     except Exception:
         logger.exception("Erro no webhook MercadoPago")
         raise HTTPException(status_code=500, detail="Erro MP")
 
     return {"ok": True}
+
