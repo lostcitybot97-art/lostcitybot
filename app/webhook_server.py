@@ -168,11 +168,6 @@ async def mercadopago_webhook(request: Request):
                 text=text,
             )
 
-            await application.bot.send_message(
-                chat_id=telegram_id,
-                text=text,
-            )
-
             logger.info(
                 "Invite enviado com sucesso para usuario",
                 extra={"telegram_id": telegram_id, "payment_id": payment["id"]},
