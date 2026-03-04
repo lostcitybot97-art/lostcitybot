@@ -15,20 +15,23 @@ logger = logging.getLogger("webhook")
 
 app = FastAPI()
 
-application = build_application()
+application = None  # 👈 não cria aqui
 
 
 @app.on_event("startup")
 async def startup():
+    global application
+
     db.init_db()
 
     if not config.WEBHOOK_URL:
         raise RuntimeError("WEBHOOK_URL não definida no ambiente")
 
+    application = build_application()
+
     await application.initialize()
     await application.start()
 
-    # 👇 REGISTRA WEBHOOK FORÇANDO RESET
     await application.bot.delete_webhook(drop_pending_updates=True)
 
     await application.bot.set_webhook(
@@ -39,21 +42,24 @@ async def startup():
     logger.info(f"Webhook configurado para {config.WEBHOOK_URL}")
     logger.info("Telegram application inicializada (webhook mode)")
 
+
 @app.on_event("shutdown")
 async def shutdown():
-    await application.stop()
-    await application.shutdown()
-    logger.info("Telegram application finalizada")
+    if application:
+        await application.stop()
+        await application.shutdown()
+        logger.info("Telegram application finalizada")
 
 
 @app.get("/health")
-@app.head("/health")
 async def health():
     return {"status": "ok"}
 
 
 @app.post("/webhook/telegram")
 async def telegram_webhook(request: Request):
+    global application
+
     payload = await request.json()
 
     try:
@@ -64,83 +70,3 @@ async def telegram_webhook(request: Request):
         raise HTTPException(status_code=500, detail="Erro Telegram")
 
     return {"ok": True}
-
-
-@app.post("/webhook/mercadopago")
-async def mercadopago_webhook(request: Request):
-    try:
-        payload = await request.json()
-    except Exception:
-        payload = {}
-
-    data_id = (payload.get("data") or {}).get("id")
-    if not data_id:
-        data_id = request.query_params.get("data.id")
-
-    event_type = payload.get("type") or request.query_params.get("type")
-
-    logger.info(f"Webhook Mercado Pago recebido: data_id={data_id} type={event_type}")
-
-    if not data_id or event_type != "payment":
-        return {"status": "ignored"}
-
-    payment = db.get_payment_by_gateway_id(str(data_id))
-    if not payment:
-        logger.warning(f"Pagamento {data_id} nao encontrado no banco")
-        return {"status": "not_found"}
-
-    previous_status = payment["status"]
-
-    status = check_payment_status(str(data_id))
-    if not status:
-        return {"status": "error_checking"}
-
-    db.update_payment_status(payment_id=payment["id"], status=status)
-
-    logger.info(
-        f"Pagamento {payment['id']} atualizado de {previous_status} para {status}"
-    )
-
-    # 🔐 Idempotência real (só executa uma vez na transição)
-    if previous_status != "approved" and status == "approved":
-
-        user = get_user_by_id(payment["user_id"])
-        if not user:
-            logger.warning(
-                f"Usuario {payment['user_id']} nao encontrado para pagamento {payment['id']}"
-            )
-            return {"status": "user_not_found"}
-
-        telegram_id = user["telegram_id"]
-
-        try:
-            expire_date = int(time.time()) + 3600
-
-            invite_link = await application.bot.create_chat_invite_link(
-                chat_id=config.GRUPO_ID,
-                member_limit=1,
-                expire_date=expire_date,
-            )
-
-            text = (
-                "✅ Pagamento aprovado!\n\n"
-                "Aqui está seu link de acesso ao grupo:\n"
-                f"{invite_link.invite_link}\n\n"
-                "Ele é válido por 1 hora e para apenas uma entrada."
-            )
-
-            await application.bot.send_message(
-                chat_id=telegram_id,
-                text=text,
-            )
-
-            logger.info(
-                f"Invite enviado com sucesso para usuario {telegram_id}"
-            )
-
-        except Exception as e:
-            logger.warning(
-                f"Erro ao criar/enviar invite para usuario {telegram_id}: {e}"
-            )
-
-    return {"status": "ok"}
