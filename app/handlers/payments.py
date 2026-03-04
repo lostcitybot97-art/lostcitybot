@@ -7,6 +7,9 @@ from app.infra import db
 from app.payments import create_pix_payment, check_payment_status
 from app.domain.plans import get_plan
 
+import base64
+from io import BytesIO
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,18 +37,35 @@ async def handle_buy_plan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Erro ao gerar PIX. Tente novamente com /start")
         return
 
-    qr_code = payment["point_of_interaction"]["transaction_data"]["qr_code"]
+    transaction_data = payment["point_of_interaction"]["transaction_data"]
+    qr_code = transaction_data["qr_code"]
+    qr_base64 = transaction_data.get("qr_code_base64")
 
-    await query.edit_message_text(
+    caption_text = (
         f"✅ *{plan_data['title']} — R$ {plan_data['price']:.2f}*\n\n"
         f"Pague via PIX copia e cola:\n\n"
         f"`{qr_code}`\n\n"
         f"⏱ Expira em 30 minutos.\n"
-        f"Após pagar, clique em Verificar Pagamento.",
-        parse_mode="Markdown",
-        reply_markup=__check_button(),
+        f"Após pagar, clique em Verificar Pagamento."
     )
 
+    if qr_base64:
+        qr_bytes = base64.b64decode(qr_base64)
+        bio = BytesIO(qr_bytes)
+        bio.name = "qrcode.png"
+
+        await query.message.reply_photo(
+            photo=bio,
+            caption=caption_text,
+            parse_mode="Markdown",
+            reply_markup=__check_button(),
+        )
+    else:
+        await query.message.reply_text(
+            caption_text,
+            parse_mode="Markdown",
+            reply_markup=__check_button(),
+        )
 
 def __check_button():
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
