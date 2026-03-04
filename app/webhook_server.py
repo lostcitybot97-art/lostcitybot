@@ -157,9 +157,15 @@ async def mercadopago_webhook(request: Request):
 
             text = (
                 "✅ Pagamento aprovado!\n\n"
-                "Aqui está seu link de acesso ao grupo:\n"
+                "Aqui está seu link EXCLUSIVO de acesso ao grupo:\n"
                 f"{invite_link.invite_link}\n\n"
-                "Ele é válido por 1 hora e para apenas uma entrada."
+                "Este link é válido por 1 hora e pode ser usado apenas uma vez. "
+                "Não compartilhe com outras pessoas."
+            )
+
+            await application.bot.send_message(
+                chat_id=telegram_id,
+                text=text,
             )
 
             await application.bot.send_message(
