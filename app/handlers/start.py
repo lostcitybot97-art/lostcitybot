@@ -15,11 +15,20 @@ def plans_keyboard():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     db.get_or_create_user(telegram_id=user.id, nome=user.full_name)
+
+    text = (
+        "👋 Bem-vindo! Escolha um plano abaixo:\n\n"
+        "Comandos úteis:\n"
+        "/minha_assinatura - ver seu plano atual e dias restantes\n"
+        "/historico - ver seus últimos pagamentos\n"
+    )
+
     await update.message.reply_text(
-        "👋 Bem-vindo! Escolha um plano abaixo:",
+        text,
         parse_mode="Markdown",
         reply_markup=plans_keyboard(),
     )
+
 
 def register_handlers(application):
     application.add_handler(CommandHandler("start", start))
