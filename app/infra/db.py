@@ -213,3 +213,30 @@ def init_db():
                 FOREIGN KEY (payment_id) REFERENCES payments_v2(id)
             );
         """)
+ 
+def get_active_subscription_with_days(user_id: int):
+    """
+    Retorna assinatura ativa + dias restantes para um user_id.
+    """
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            SELECT
+                s.*,
+                GREATEST(
+                    0,
+                    FLOOR(EXTRACT(EPOCH FROM (s.ends_at::timestamp - NOW())) / 86400)
+                ) AS dias_restantes
+            FROM subscriptions s
+            WHERE
+                s.user_id = %s
+                AND s.status = 'active'
+                AND s.ends_at > %s
+            ORDER BY s.ends_at DESC
+            LIMIT 1
+            """,
+            (user_id, now_iso()),
+        )
+        return cur.fetchone()
+
