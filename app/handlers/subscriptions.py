@@ -50,7 +50,40 @@ async def minha_assinatura(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(text, parse_mode="Markdown")
 
+async def historico(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+
+    user_id = db.get_or_create_user(telegram_id=user.id, nome=user.full_name)
+
+    rows = db.get_payments_history_by_user(user_id, limit=10)
+
+    if not rows:
+        await update.message.reply_text(
+            "Você ainda não tem pagamentos registrados."
+        )
+        return
+
+    linhas = []
+    for p in rows:
+        try:
+            created_dt = datetime.fromisoformat(p["created_at"])
+            created_str = created_dt.strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            created_str = p["created_at"]
+
+        status = p["status"]
+        plan = p["plan"]
+        amount = p["amount"]
+
+        linha = f"- {created_str} | plano `{plan}` | R${amount:.2f} | status `{status}`"
+        linhas.append(linha)
+
+    texto = "🧾 *Seus últimos pagamentos:*\n\n" + "\n".join(linhas)
+
+    await update.message.reply_text(texto, parse_mode="Markdown")
+
 
 def register_handlers(application):
     application.add_handler(CommandHandler("minha_assinatura", minha_assinatura))
+    application.add_handler(CommandHandler("historico", historico))
 

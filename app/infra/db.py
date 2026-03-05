@@ -104,6 +104,33 @@ def get_last_payment_by_user(user_id: int):
         """, (user_id,))
         return cur.fetchone()
 
+def get_payments_history_by_user(user_id: int, limit: int = 10):
+    """
+    Retorna os últimos pagamentos de um usuário (mais recentes primeiro).
+    """
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            SELECT
+                id,
+                plan,
+                amount,
+                status,
+                created_at,
+                expires_at,
+                confirmed_at,
+                gateway,
+                gateway_payment_id
+            FROM payments_v2
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT %s
+            """,
+            (user_id, limit),
+        )
+        return cur.fetchall()
+
 
 def get_payment_by_gateway_id(gateway_payment_id: str):
     with get_db() as conn:
