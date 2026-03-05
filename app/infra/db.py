@@ -267,3 +267,36 @@ def get_active_subscription_with_days(user_id: int):
         )
         return cur.fetchone()
 
+def get_recently_expired_subscriptions(window_minutes: int = 10):
+    """
+    Assinaturas que estavam ativas e expiraram na última janela.
+    """
+    now = datetime.utcnow()
+    now_str = now.isoformat()
+    window_str = f"{window_minutes} minutes"
+
+    with get_db() as conn:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            """
+            SELECT s.*, u.telegram_id
+            FROM subscriptions s
+            JOIN users u ON u.id = s.user_id
+            WHERE
+                s.status = 'active'
+                AND s.ends_at <= %s
+                AND s.ends_at > (%s::timestamp - INTERVAL %s)::text
+            """,
+            (now_str, now_str, window_str),
+        )
+        rows = cur.fetchall()
+
+        if rows:
+            ids = [r["id"] for r in rows]
+            cur.execute(
+                "UPDATE subscriptions SET status = 'expired' WHERE id = ANY(%s)",
+                (ids,),
+            )
+
+        return rows
+

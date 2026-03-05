@@ -1,7 +1,7 @@
 import logging
 from app.infra import db
 from app.domain.subscriptions import activate_subscription_from_payment
-
+from app import config
 
 logger = logging.getLogger(__name__)
 
@@ -73,3 +73,32 @@ def process_confirmed_payments():
                 extra={"payment_id": payment["id"]},
             )
 
+async def revoke_expired_group_access(application):
+    """
+    Remove do grupo quem acabou de expirar a assinatura.
+    """
+    expired = db.get_recently_expired_subscriptions(window_minutes=10)
+
+    for sub in expired:
+        telegram_id = sub["telegram_id"]
+        try:
+            # remove o usuário do grupo
+            await application.bot.ban_chat_member(
+                chat_id=config.GRUPO_ID,
+                user_id=telegram_id,
+            )
+            # unban para permitir voltar no futuro via novo invite
+            await application.bot.unban_chat_member(
+                chat_id=config.GRUPO_ID,
+                user_id=telegram_id,
+                only_if_banned=True,
+            )
+            logger.info(
+                "[JOB] Acesso revogado por expiração",
+                extra={"user_id": sub["user_id"], "sub_id": sub["id"]},
+            )
+        except Exception:
+            logger.exception(
+                "[JOB] Falha ao remover usuário expirado do grupo",
+                extra={"telegram_id": telegram_id},
+            )
