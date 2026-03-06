@@ -2,13 +2,13 @@
 
 PLANS = {
     "semanal": {
-        "title": "Plano Semanal",
-        "price": 1.99,  # valor de teste
+        "title": "Plano semanal",
+        "price": 19.90,
         "days": 7,
     },
     "mensal": {
-        "title": "Plano Mensal",
-        "price": 1.99,  # valor de teste
+        "title": "Plano mensal",
+        "price": 26.90,
         "days": 30,
     },
 }
