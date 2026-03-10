@@ -7,6 +7,9 @@ from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
 from app.infra import db
 from app.handlers.start import start  # para usar como "voltar ao menu"
 
+SUPORTE_USERNAME = "SuporteVendasLC"
+SUPORTE_LINK = f"https://t.me/SuporteVendasLC"
+
 logger = logging.getLogger(__name__)
 
 
@@ -122,9 +125,16 @@ async def menu_minhas_coisas(update: Update, context: ContextTypes.DEFAULT_TYPE)
             reply_markup=back_menu_keyboard(),
         )
     elif query.data == "menu:suporte":
+        text = (
+            "🆘 *Suporte LostCityBot*\n\n"
+            "Fale diretamente com nosso time de suporte no Telegram:\n"
+            f"{SUPORTE_LINK}"
+        )
         await query.edit_message_text(
-            "🆘 Suporte: fale com @seu_usuario_ou_canal.",
+            text,
+            parse_mode="Markdown",
             reply_markup=back_menu_keyboard(),
+            disable_web_page_preview=True,
         )
 
 
