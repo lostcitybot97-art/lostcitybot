@@ -268,9 +268,6 @@ def get_active_subscription_with_days(user_id: int):
         return cur.fetchone()
 
 def get_recently_expired_subscriptions(window_minutes: int = 10):
-    """
-    Assinaturas que estavam ativas e expiraram na última janela.
-    """
     now = datetime.utcnow()
     now_str = now.isoformat()
     window_str = f"{window_minutes} minutes"
@@ -284,8 +281,8 @@ def get_recently_expired_subscriptions(window_minutes: int = 10):
             JOIN users u ON u.id = s.user_id
             WHERE
                 s.status = 'active'
-                AND s.ends_at <= %s
-                AND s.ends_at > (%s::timestamp - INTERVAL %s)::text
+                AND s.ends_at <= %s::timestamptz
+                AND s.ends_at > (%s::timestamptz - INTERVAL %s)
             """,
             (now_str, now_str, window_str),
         )
