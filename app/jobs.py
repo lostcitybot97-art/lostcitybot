@@ -102,3 +102,12 @@ async def revoke_expired_group_access(application):
                 "[JOB] Falha ao remover usuário expirado do grupo",
                 extra={"telegram_id": telegram_id},
             )
+
+from app.infra import db
+
+async def schedule_expiration_reminders_job():
+    """
+    Job que roda periodicamente e popula a outbox com avisos de 24h.
+    """
+    db.schedule_expiration_reminders(hours=24)
+

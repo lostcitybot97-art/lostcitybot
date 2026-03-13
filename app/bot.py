@@ -3,7 +3,11 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import TELEGRAM_TOKEN
 from app.handlers import payments, start, subscriptions
-from app.jobs import process_confirmed_payments, revoke_expired_group_access
+from app.jobs import (
+    process_confirmed_payments,
+    revoke_expired_group_access,
+    schedule_expiration_reminders_job,
+)
 
 
 def build_application():
@@ -27,6 +31,13 @@ def build_application():
         minutes=5,
         args=[application],
     )
+    scheduler.add_job(
+        schedule_expiration_reminders_job,
+        "interval",
+        minutes=30,
+    )
+
+
     scheduler.start()
 
     return application

@@ -93,6 +93,43 @@ def get_active_subscription(user_id: int):
         """, (user_id, now_iso()))
         return cur.fetchone()
 
+def schedule_expiration_reminders(hours: int = 24):
+    """
+    Cria tasks de aviso 'EXPIRATION_WARNING_24H' para assinaturas
+    que vencem entre 23h e 24h a partir de agora.
+    """
+    window_start = f"{hours - 1} hours"
+    window_end = f"{hours} hours"
+
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO outbox_tasks (user_id, task_type, scheduled_for, metadata)
+            SELECT
+                s.user_id,
+                'EXPIRATION_WARNING_24H',
+                NOW(),
+                jsonb_build_object('subscription_id', s.id)
+            FROM subscriptions s
+            WHERE
+                s.status = 'active'
+                AND s.ends_at::timestamptz
+                    BETWEEN (NOW() + INTERVAL %s)
+                        AND (NOW() + INTERVAL %s)
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM outbox_tasks o
+                    WHERE
+                        o.user_id = s.user_id
+                        AND o.task_type = 'EXPIRATION_WARNING_24H'
+                        AND o.metadata->>'subscription_id' = s.id::text
+                )
+            """,
+            (window_start, window_end),
+        )
+
+
 
 def get_last_payment_by_user(user_id: int):
     with get_db() as conn:
