@@ -47,14 +47,13 @@ def process_pending_payment_reminders():
 
 
 def process_confirmed_payments():
-    """
-    Job canônico:
-    Pagamento confirmado -> assinatura ativa.
-    Seguro para rodar N vezes (idempotente).
-    """
     payments = db.get_confirmed_unprocessed_payments()
 
+    logger.info(f"[DEBUG] Pagamentos encontrados: {len(payments)}")
+
     for payment in payments:
+        logger.info(f"[DEBUG] Payment raw: {payment}")
+
         try:
             logger.info(
                 "[JOB] Processando pagamento confirmado",
