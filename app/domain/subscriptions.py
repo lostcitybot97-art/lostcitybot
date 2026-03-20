@@ -69,9 +69,8 @@ def activate_subscription_from_payment(payment_id: int):
         current_sub = cur.fetchone()
 
         if current_sub:
-            base_end = datetime.fromisoformat(current_sub["ends_at"])
-            starts_at = datetime.fromisoformat(current_sub["starts_at"])
-
+base_end = current_sub["ends_at"]
+starts_at = current_sub["starts_at"]
             # Expira antiga
             cur.execute(
                 "UPDATE subscriptions SET status = 'expired' WHERE id = %s",
