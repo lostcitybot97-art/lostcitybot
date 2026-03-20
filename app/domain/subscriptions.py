@@ -64,13 +64,14 @@ def activate_subscription_from_payment(payment_id: int):
               AND ends_at > %s
             LIMIT 1
             """,
-            (user_id, now.isoformat())
+            (user_id, now)
         )
         current_sub = cur.fetchone()
 
         if current_sub:
-base_end = current_sub["ends_at"]
-starts_at = current_sub["starts_at"]
+            base_end = current_sub["ends_at"]
+            starts_at = current_sub["starts_at"]
+
             # Expira antiga
             cur.execute(
                 "UPDATE subscriptions SET status = 'expired' WHERE id = %s",
@@ -102,8 +103,8 @@ starts_at = current_sub["starts_at"]
                     user_id,
                     payment_id,
                     plan,
-                    starts_at.isoformat(),
-                    new_ends_at.isoformat(),
+                    starts_at,
+                    new_ends_at,
                 )
             )
 
@@ -126,6 +127,6 @@ starts_at = current_sub["starts_at"]
             return sub
 
         except psycopg2.errors.UniqueViolation:
-            # fallback absoluto (caso constraint ainda não esteja criada)
+            # fallback absoluto (caso constraint ainda não estivesse criada)
             logger.warning(f"[RACE] UniqueViolation capturada: payment_id={payment_id}")
             return
