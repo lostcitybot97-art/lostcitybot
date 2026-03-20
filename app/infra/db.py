@@ -93,41 +93,84 @@ def get_active_subscription(user_id: int):
         """, (user_id, now_iso()))
         return cur.fetchone()
 
-def schedule_expiration_reminders(hours: int = 24):
+def schedule_expiration_reminders():
     """
-    Cria tasks de aviso 'EXPIRATION_WARNING_24H' para assinaturas
-    que vencem entre 23h e 24h a partir de agora.
-    """
-    window_start = f"{hours - 1} hours"
-    window_end = f"{hours} hours"
+    Cria tasks de aviso de expiração (D-3, D-2, D-1) para assinaturas
+    ativas com pagamento confirmado.
 
+    Garante 1 task por (subscription_id, days_left).
+    """
     with get_db() as conn:
-        cur = conn.cursor()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+
+        # 1) Buscar assinaturas elegíveis (3, 2 ou 1 dia para acabar)
         cur.execute(
             """
-            INSERT INTO outbox_tasks (user_id, task_type, scheduled_for, metadata)
             SELECT
-                s.user_id,
-                'EXPIRATION_WARNING_24H',
-                NOW(),
-                jsonb_build_object('subscription_id', s.id)
+              s.id               AS subscription_id,
+              s.user_id,
+              s.plan,
+              s.ends_at,
+              p.id               AS payment_id,
+              (DATE(s.ends_at) - DATE(NOW()))::int AS days_left
             FROM subscriptions s
+            JOIN payments_v2 p
+              ON p.id = s.payment_id
             WHERE
-                s.status = 'active'
-                AND s.ends_at::timestamptz
-                    BETWEEN (NOW() + INTERVAL %s)
-                        AND (NOW() + INTERVAL %s)
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM outbox_tasks o
-                    WHERE
-                        o.user_id = s.user_id
-                        AND o.task_type = 'EXPIRATION_WARNING_24H'
-                        AND o.metadata->>'subscription_id' = s.id::text
-                )
+              s.status = 'active'
+              AND p.status = 'confirmed'
+              AND (DATE(s.ends_at) - DATE(NOW())) IN (1, 2, 3)
             """,
-            (window_start, window_end),
         )
+        rows = cur.fetchall()
+
+        if not rows:
+            return
+
+        insert_cur = conn.cursor()
+
+        # 2) Para cada assinatura, criar task se ainda não existir
+        for row in rows:
+            subscription_id = row["subscription_id"]
+            user_id = row["user_id"]
+            days_left = row["days_left"]
+
+            # Evitar duplicatas: já existe task para esse sub + days_left?
+            insert_cur.execute(
+                """
+                SELECT 1
+                FROM outbox_tasks
+                WHERE
+                    user_id = %s
+                    AND task_type = 'SUBSCRIPTION_EXPIRY_WARNING'
+                    AND metadata->>'subscription_id' = %s
+                    AND (metadata->>'days_left')::int = %s
+                LIMIT 1
+                """,
+                (user_id, str(subscription_id), days_left),
+            )
+            already_exists = insert_cur.fetchone()
+            if already_exists:
+                continue
+
+            # Cria task na outbox, metadata básica
+            insert_cur.execute(
+                """
+                INSERT INTO outbox_tasks (user_id, task_type, status, scheduled_for, metadata)
+                VALUES (
+                    %s,
+                    'SUBSCRIPTION_EXPIRY_WARNING',
+                    'pending',
+                    NOW(),
+                    jsonb_build_object(
+                        'subscription_id', %s,
+                        'plan', %s,
+                        'days_left', %s
+                    )
+                )
+                """,
+                (user_id, subscription_id, row["plan"], days_left),
+            )
 
 
 

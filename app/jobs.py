@@ -106,7 +106,6 @@ from app.infra import db
 
 async def schedule_expiration_reminders_job():
     """
-    Job que roda periodicamente e popula a outbox com avisos de 24h.
+    Job que roda periodicamente e popula a outbox com avisos D-3, D-2 e D-1.
     """
-    db.schedule_expiration_reminders(hours=24)
-
+    db.schedule_expiration_reminders()
