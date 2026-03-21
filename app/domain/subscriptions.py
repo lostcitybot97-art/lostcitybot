@@ -55,6 +55,17 @@ def activate_subscription_from_payment(payment_id: int):
         days = PLANS[plan]["days"]
         now = datetime.utcnow()
 
+        logger.info(
+            "[DEBUG] Calculando assinatura a partir do plano",
+           extra={
+                "user_id": user_id,
+                "plan": plan,
+                "days_from_plan": days,
+            }
+        )
+
+
+
         # 🔎 3. Busca assinatura ativa
         cur.execute(
             """
