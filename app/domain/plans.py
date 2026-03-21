@@ -3,15 +3,15 @@
 PLANS = {
     "semanal": {
         "title": "Plano semanal",
-        "price": 1.99,
-        "days": 4,
+        "price": 19.90,
+        "days": 7,
         "renewal_discount_percent": 10,
     },
     "mensal": {
         "title": "Plano mensal",
         "price": 26.90,
         "days": 30,
-        "renewal_discount_percent": 10,
+        "renewal_discount_percent": 12,
     },
 }
 
