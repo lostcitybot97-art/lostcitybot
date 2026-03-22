@@ -125,6 +125,8 @@ def schedule_expiration_reminders():
         )
         rows = cur.fetchall()
 
+	logger.info("[REMINDERS] assinaturas elegíveis: %d", len(rows))
+
         if not rows:
             return
 

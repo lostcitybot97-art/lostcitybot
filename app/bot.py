@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from telegram.ext import ApplicationBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -7,7 +9,7 @@ from app.jobs import (
     process_confirmed_payments,
     revoke_expired_group_access,
     schedule_expiration_reminders_job,
-    process_outbox_tasks,  
+    process_outbox_tasks,
 )
 
 
@@ -21,30 +23,35 @@ def build_application():
 
     # Jobs
     scheduler = AsyncIOScheduler(timezone="UTC")
+    now = datetime.utcnow()
+
     scheduler.add_job(
         process_confirmed_payments,
         "interval",
         minutes=1,
+        start_date=now,
     )
     scheduler.add_job(
         revoke_expired_group_access,
         "interval",
         minutes=5,
         args=[application],
+        start_date=now + timedelta(seconds=10),
     )
     scheduler.add_job(
         schedule_expiration_reminders_job,
         "interval",
         minutes=30,
+        start_date=now + timedelta(seconds=20),
+        misfire_grace_time=60,
     )
     scheduler.add_job(
         process_outbox_tasks,
         "interval",
         minutes=1,
         args=[application],
+        start_date=now + timedelta(seconds=30),
     )
-
-
 
     scheduler.start()
 
