@@ -14,20 +14,21 @@ logger = logging.getLogger(__name__)
 sdk = mercadopago.SDK(config.MP_ACCESS_TOKEN)
 
 
-def create_pix_payment(user_id: int, plan: str):
+def create_pix_payment(user_id: int, plan: str, override_amount: float | None = None):
     plan_data = get_plan(plan)
     if not plan_data:
         raise ValueError(f"Plano inválido: {plan}")
 
-    amount = plan_data["price"]
+    base_amount = plan_data["price"]
+    amount = override_amount if override_amount is not None else base_amount
 
     pending = get_pending_payment(user_id)
     if pending:
         pending = dict(pending)
 
     if pending:
-        if pending["plan"] == plan:
-            logger.info("PIX pendente existente (mesmo plano) — reutilizando")
+        if pending["plan"] == plan and float(pending["amount"]) == float(amount):
+            logger.info("PIX pendente existente (mesmo plano e mesmo valor) — reutilizando")
             return {
                 "id": pending["gateway_payment_id"],
                 "external_reference": pending["external_reference"],
@@ -39,7 +40,7 @@ def create_pix_payment(user_id: int, plan: str):
                 },
             }
 
-        logger.info("Plano diferente — expirando PIX antigo")
+        logger.info("Plano ou valor diferente — expirando PIX antigo")
         with get_db() as conn:
             cur = conn.cursor()
             cur.execute(
@@ -52,7 +53,7 @@ def create_pix_payment(user_id: int, plan: str):
     date_of_expiration = expires_at.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
     payment_data = {
-        "transaction_amount": amount,
+        "transaction_amount": float(amount),
         "description": plan_data["title"],
         "payment_method_id": "pix",
         "payer": {"email": f"user{user_id}@telegram.bot"},
@@ -130,3 +131,4 @@ def check_payment_status(gateway_payment_id: str) -> str | None:
         return None
 
     return result["response"].get("status")
+
