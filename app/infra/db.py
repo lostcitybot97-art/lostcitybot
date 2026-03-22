@@ -93,6 +93,7 @@ def get_active_subscription(user_id: int):
         """, (user_id, now_iso()))
         return cur.fetchone()
 
+
 def schedule_expiration_reminders():
     """
     Cria tasks de aviso de expiração (D-3, D-2, D-1) para assinaturas
@@ -112,14 +113,14 @@ def schedule_expiration_reminders():
               s.plan,
               s.ends_at,
               p.id               AS payment_id,
-              (DATE(s.ends_at) - DATE(NOW()))::int AS days_left
+              FLOOR(EXTRACT(EPOCH FROM (s.ends_at - NOW())) / 86400)::int AS days_left
             FROM subscriptions s
             JOIN payments_v2 p
               ON p.id = s.payment_id
             WHERE
               s.status = 'active'
               AND p.status = 'confirmed'
-              AND (DATE(s.ends_at) - DATE(NOW())) IN (1, 2, 3)
+              AND FLOOR(EXTRACT(EPOCH FROM (s.ends_at - NOW())) / 86400)::int IN (1, 2, 3)
             """,
         )
         rows = cur.fetchall()
@@ -173,7 +174,6 @@ def schedule_expiration_reminders():
             )
 
 
-
 def get_last_payment_by_user(user_id: int):
     with get_db() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -183,6 +183,7 @@ def get_last_payment_by_user(user_id: int):
             ORDER BY created_at DESC LIMIT 1
         """, (user_id,))
         return cur.fetchone()
+
 
 def get_payments_history_by_user(user_id: int, limit: int = 10):
     """
@@ -271,6 +272,7 @@ def get_confirmed_unprocessed_payments():
         """)
         return cur.fetchall()
 
+
 def get_user_by_id(user_id: int):
     with get_db() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -320,7 +322,8 @@ def init_db():
                 FOREIGN KEY (payment_id) REFERENCES payments_v2(id)
             );
         """)
- 
+
+
 def get_active_subscription_with_days(user_id: int):
     """
     Retorna assinatura ativa + dias restantes para um user_id.
@@ -346,6 +349,7 @@ def get_active_subscription_with_days(user_id: int):
             (user_id, now_iso()),
         )
         return cur.fetchone()
+
 
 def get_recently_expired_subscriptions(window_minutes: int = 10):
     now = datetime.utcnow()

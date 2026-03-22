@@ -7,6 +7,7 @@ from app.jobs import (
     process_confirmed_payments,
     revoke_expired_group_access,
     schedule_expiration_reminders_job,
+    process_outbox_tasks,  
 )
 
 
@@ -36,6 +37,13 @@ def build_application():
         "interval",
         minutes=30,
     )
+    scheduler.add_job(
+        process_outbox_tasks,
+        "interval",
+        minutes=1,
+        args=[application],
+    )
+
 
 
     scheduler.start()
