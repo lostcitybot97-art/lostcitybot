@@ -54,10 +54,10 @@ async def minha_assinatura(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ends_str = ends_at
 
     text = (
-        "📄 *Sua assinatura*\\n\\n"
-        f"Plano: `{plan}`\\n"
-        f"Início: `{starts_str}`\\n"
-        f"Fim: `{ends_str}`\\n"
+        "📄 *Sua assinatura*\n\n"
+        f"Plano: `{plan}`\n"
+        f"Início: `{starts_str}`\n"
+        f"Fim: `{ends_str}`\n"
         f"Dias restantes: *{dias_restantes}*"
     )
 
@@ -101,7 +101,7 @@ async def historico(update: Update, context: ContextTypes.DEFAULT_TYPE):
         linha = f"- {created_str} | plano `{plan}` | R${amount:.2f} | status `{status}`"
         linhas.append(linha)
 
-    texto = "🧾 *Seus últimos pagamentos:*\\n\\n" + "\\n".join(linhas)
+    texto = "🧾 *Seus últimos pagamentos:*\n\n" + "\n".join(linhas)
 
     if update.message:
         await update.message.reply_text(
@@ -151,8 +151,6 @@ async def menu_minhas_coisas(update: Update, context: ContextTypes.DEFAULT_TYPE)
         if dias_restantes <= 3:
             discount_percent = plan_data.get("renewal_discount_percent", 0)
 
-        # Preço efetivo mostrado pro usuário (a cobrança real ainda é o base_price;
-        # vamos discutir logo abaixo como alinhar o valor no MP)
         final_price = base_price
         if discount_percent > 0:
             final_price = round(base_price * (1 - discount_percent / 100), 2)
@@ -160,7 +158,11 @@ async def menu_minhas_coisas(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text("⏳ Gerando seu PIX para renovação...")
 
         try:
-            payment = create_pix_payment(user_id=user_id, plan=plan_id)
+            payment = create_pix_payment(
+                user_id=user_id,
+                plan=plan_id,
+                override_amount=final_price,
+            )
         except Exception:
             logger.exception("Erro ao gerar PIX de renovação")
             await query.edit_message_text(
@@ -174,20 +176,20 @@ async def menu_minhas_coisas(update: Update, context: ContextTypes.DEFAULT_TYPE)
         qr_base64 = transaction_data.get("qr_code_base64")
 
         caption_text = (
-            f"✅ *Renovação — {plan_data['title']}*\\n"
-            f"Valor oficial do plano: R$ {base_price:.2f}\\n"
+            f"✅ *Renovação — {plan_data['title']}*\n"
+            f"Valor oficial do plano: R$ {base_price:.2f}\n"
         )
 
         if discount_percent > 0:
             caption_text += (
-                f"Desconto de renovação: {discount_percent}%\\n"
-                f"Valor promocional: *R$ {final_price:.2f*}\\n"
+                f"Desconto de renovação: {discount_percent}%\n"
+                f"Valor promocional: *R$ {final_price:.2f}*\n"
             )
 
         caption_text += (
-            "\\nPague via PIX copia e cola:\\n\\n"
-            f"`{qr_code}`\\n\\n"
-            "⏱ Expira em 30 minutos.\\n"
+            "\nPague via PIX copia e cola:\n\n"
+            f"`{qr_code}`\n\n"
+            "⏱ Expira em 30 minutos.\n"
             "Após pagar, clique em *Verificar Pagamento*."
         )
 
@@ -214,8 +216,8 @@ async def menu_minhas_coisas(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
     elif query.data == "menu:suporte":
         text = (
-            "🆘 *Suporte LostCityBot*\\n\\n"
-            "Fale diretamente com nosso time de suporte no Telegram:\\n"
+            "🆘 *Suporte LostCityBot*\n\n"
+            "Fale diretamente com nosso time de suporte no Telegram:\n"
             f"{SUPORTE_LINK}"
         )
         await query.edit_message_text(
