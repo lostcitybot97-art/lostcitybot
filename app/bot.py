@@ -28,13 +28,13 @@ def build_application():
     scheduler.add_job(
         process_confirmed_payments,
         "interval",
-        minutes=1,
+        minutes=3,
         start_date=now,
     )
     scheduler.add_job(
         revoke_expired_group_access,
         "interval",
-        minutes=5,
+        minutes=30,
         args=[application],
         start_date=now + timedelta(seconds=10),
     )
@@ -48,7 +48,7 @@ def build_application():
     scheduler.add_job(
         process_outbox_tasks,
         "interval",
-        minutes=1,
+        minutes=15,
         args=[application],
         start_date=now + timedelta(seconds=30),
     )
