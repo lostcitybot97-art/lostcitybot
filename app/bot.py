@@ -28,32 +28,33 @@ def build_application():
     scheduler.add_job(
         process_confirmed_payments,
         "interval",
-        minutes=3,
+        minutes=30, #era 3
         start_date=now,
     )
     scheduler.add_job(
         revoke_expired_group_access,
         "interval",
-        minutes=30,
+        minutes=360, #era 30
         args=[application],
         start_date=now + timedelta(seconds=10),
     )
-    scheduler.add_job(
-        schedule_expiration_reminders_job,
-        "interval",
-        minutes=30,
-        start_date=now + timedelta(seconds=20),
-        misfire_grace_time=60,
-    )
-    scheduler.add_job(
-        process_outbox_tasks,
-        "interval",
-        minutes=15,
-        args=[application],
-        start_date=now + timedelta(seconds=30),
-    )
+#    scheduler.add_job(
+#        schedule_expiration_reminders_job,
+#        "interval",
+#        minutes=240, #era 30
+#        start_date=now + timedelta(seconds=20),
+#        misfire_grace_time=60,
+#    )
+#    scheduler.add_job(
+#        process_outbox_tasks,
+#        "interval",
+#        minutes=120, #era 15
+#        args=[application],
+#        start_date=now + timedelta(seconds=30),
+#    )
 
     scheduler.start()
 
     return application
+
 

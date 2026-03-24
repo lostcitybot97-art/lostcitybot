@@ -268,9 +268,12 @@ def get_confirmed_unprocessed_payments():
     with get_db() as conn:
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("""
-            SELECT p.* FROM payments_v2 p
+            SELECT p.*
+            FROM payments_v2 p
             LEFT JOIN subscriptions s ON s.payment_id = p.id
             WHERE p.status = 'confirmed' AND s.id IS NULL
+            ORDER BY p.created_at DESC
+            LIMIT 10
         """)
         return cur.fetchall()
 
