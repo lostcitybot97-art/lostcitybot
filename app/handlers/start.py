@@ -3,28 +3,43 @@ from telegram.ext import CommandHandler, ContextTypes
 from app.infra import db
 from app.domain.plans import PLANS
 
+# 🔥 DESCONTOS
+DISCOUNTS = {
+    "semanal": 0.25,  # 25%
+    "mensal": 0.35,   # 35%
+}
+
+
+def get_discounted_price(plan_id: str):
+    base_price = PLANS[plan_id]["price"]
+    discount = DISCOUNTS.get(plan_id, 0)
+
+    final_price = round(base_price * (1 - discount), 2)
+
+    return base_price, final_price, int(discount * 100)
+
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
+    semanal_base, semanal_final, sem_desc = get_discounted_price("semanal")
+    mensal_base, mensal_final, men_desc = get_discounted_price("mensal")
+
     rows = [
-        # linha 1: planos
         [
             InlineKeyboardButton(
-                text=f"🗓 Plano semanal - R${PLANS['semanal']['price']:.2f}",
+                text=f"🗓 Semanal ~R${semanal_base:.2f}~ → R${semanal_final:.2f} ({sem_desc}% OFF)",
                 callback_data="buy:semanal",
             )
         ],
         [
             InlineKeyboardButton(
-                text=f"📆 Plano mensal - R${PLANS['mensal']['price']:.2f}",
+                text=f"📆 Mensal ~R${mensal_base:.2f}~ → R${mensal_final:.2f} ({men_desc}% OFF)",
                 callback_data="buy:mensal",
             )
         ],
-        # linha 2: painel
         [
             InlineKeyboardButton("📄 Minha assinatura", callback_data="menu:minha_assinatura"),
             InlineKeyboardButton("🧾 Histórico", callback_data="menu:historico"),
         ],
-        # linha 3: ações extra
         [
             InlineKeyboardButton("🔁 Renovar plano", callback_data="menu:renovar"),
             InlineKeyboardButton("🆘 Suporte", callback_data="menu:suporte"),
@@ -39,12 +54,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = (
         "👋 *Bem-vindo ao LostCityBot!*\n\n"
-        "Use o menu abaixo para:\n"
-        "• Escolher ou renovar seu plano\n"
-        "• Ver sua assinatura atual\n"
-        "• Consultar seu histórico de pagamentos\n"
-        "• Falar com o suporte\n\n"
-        "_Basta tocar nos botões, não precisa digitar comandos._"
+        "🔥 *Desconto ativo por tempo limitado*\n"
+        "🚀 Acesso imediato ao conteúdo\n\n"
+        "Escolha seu plano abaixo:"
     )
 
     if update.message:
@@ -54,7 +66,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown",
         )
     elif update.callback_query:
-        # usado quando clicamos em 🔙 Voltar ao menu
         query = update.callback_query
         await query.edit_message_text(
             text,
@@ -65,4 +76,3 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def register_handlers(application):
     application.add_handler(CommandHandler("start", start))
-
